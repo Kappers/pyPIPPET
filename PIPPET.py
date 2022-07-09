@@ -1,8 +1,8 @@
 '''
 PIPPET: Phase Inference from Point Process Event Timing [1]
-    + mPIPPET: multiple event streams [1]
-    + pPIPPET: pattern inference [2]
-    +  WIPPET: wrapped PIPPET
+    +   mPIPPET: multiple event streams [1]
+    +   pPIPPET: pattern inference [2]
+    + oscPIPPET: oscillatory PIPPET
 
 Python variant of Jonathan Cannon's original MATLAB implementation:
     https://github.com/joncannon/PIPPET
@@ -11,7 +11,7 @@ Python variant of Jonathan Cannon's original MATLAB implementation:
 TODO:
 - Surprisal/Gradients for pPIPPET
 - Refactor for mpPIPPET, multi-stream per template
-- mpWIPPET, because, why not?
+- poscPIPPET, because, why not?
 
 [1] Expectancy-based rhythmic entrainment as continuous Bayesian inference.
     Cannon J (2021)  PLOS Computational Biology 17(6): e1009025.
@@ -59,7 +59,7 @@ class PIPPETParams:
     t0: float = 0.0           # Starting time for simulation with respect to event times
     tmax: float = np.nan      # Maximum time for simulation (otherwise based on event times)
 
-    tau: float = 1.0   # Tempo-like dial for WIPPET
+    tau: float = 1.0   # Tempo-like dial for oscPIPPET
 
     def add(self, times: np.ndarray, means: np.ndarray, vars_: np.ndarray, lambdas: np.ndarray,
             label: str):
@@ -76,7 +76,7 @@ class PIPPETStream:
         self.params = params
         self.lambda_0 = lambda_0
         self.e_times_p = params.e_times
-        # For WIPPET:
+        # For oscPIPPET:
         self.M = np.arange(-40, 40+1, 1)
         self.cs = np.empty((self.params.e_means.size, self.M.size), dtype=np.clongdouble)
         self.e_means_ = self.params.e_means.reshape(-1, 1)
@@ -233,9 +233,9 @@ class mPIPPET(PIPPET):
             else:
                 self.surp[t_i, s_i, 0] = -np.log(1-self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
                 self.surp[t_i, s_i, 1] = -np.log(1-self.streams[s_i].lambda_hat(mu, V)*self.params.dt)
-                self.grad[t_i] =  -np.log(1-self.streams[s_i].lambda_hat(mu_prev+.01, V_prev)*self.params.dt)
-                self.grad[t_i] +=  np.log(1-self.streams[s_i].lambda_hat(mu_prev-.01, V_prev)*self.params.dt)
-                self.grad[t_i] /= .02
+                self.grad[t_i, s_i] =  -np.log(1-self.streams[s_i].lambda_hat(mu_prev+.01, V_prev)*self.params.dt)
+                self.grad[t_i, s_i] +=  np.log(1-self.streams[s_i].lambda_hat(mu_prev-.01, V_prev)*self.params.dt)
+                self.grad[t_i, s_i] /= .02
 
         return mu, V
 
@@ -338,8 +338,8 @@ class pPIPPET(PIPPET):
                         self.V_s[i] -= self.p_m[i,m]*self.p_m[i,n]*mu_ms[m]*mu_ms[n]
 
 
-class WIPPET(PIPPET):
-    ''' Wrapped PIPPET '''
+class oscPIPPET(PIPPET):
+    ''' Oscillatory PIPPET '''
 
     def step(self, t_i: float, z_prev: complex, mu_prev: float, V_prev: float) -> complex:
         ''' Posterior update for a time step '''
@@ -362,15 +362,15 @@ class WIPPET(PIPPET):
 
                 self.surp[t_i, s_i, 0] = -np.log(self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
                 self.surp[t_i, s_i, 1] = -np.log(self.streams[s_i].lambda_hat(mu, V_s)*self.params.dt)
-                self.grad[t_i] =  -np.log(self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
-                self.grad[t_i] +=  np.log(self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
-                self.grad[t_i] /= .02
+                self.grad[t_i,s_i] =  -np.log(self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
+                self.grad[t_i,s_i] +=  np.log(self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
+                self.grad[t_i,s_i] /= .02
             else:
                 self.surp[t_i, s_i, 0] = -np.log(1-self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
                 self.surp[t_i, s_i, 1] = -np.log(1-self.streams[s_i].lambda_hat(mu, V_s)*self.params.dt)
-                self.grad[t_i] =  -np.log(1-self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
-                self.grad[t_i] +=  np.log(1-self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
-                self.grad[t_i] /= .02
+                self.grad[t_i, s_i] =  -np.log(1-self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
+                self.grad[t_i, s_i] +=  np.log(1-self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
+                self.grad[t_i, s_i] /= .02
 
         return z
 
@@ -426,7 +426,7 @@ if __name__ == "__main__":
     m.run()
     pdb.set_trace()
 
-    # Run WIPPET - redefine parameter set of wrapped stream
+    # Run oscPIPPET - redefine parameter set of wrapped stream
     p = PIPPETParams()
     p.dt = 0.002
     p.overtime = np.pi/10.
@@ -439,8 +439,8 @@ if __name__ == "__main__":
     e_vars    = np.array([0.005]).repeat(len(e_means))
     e_lambdas = np.array([0.02]).repeat(len(e_means))
     p.add(e_times, e_means, e_vars, e_lambdas, '')
-    print('Running WIPPET...')
-    m = WIPPET(p)
+    print('Running oscPIPPET...')
+    m = oscPIPPET(p)
     m.run()
     pdb.set_trace()
 

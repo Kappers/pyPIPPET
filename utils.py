@@ -6,9 +6,9 @@ import numpy as np
 def template(model: PIPPET) -> np.ndarray:
     ''' Collapse expectation templates into a numpy array '''
     from scipy.stats import norm
-    from PIPPET import WIPPET
+    from PIPPET import oscPIPPET
 
-    if isinstance(model, WIPPET):
+    if isinstance(model, oscPIPPET):
         # Wrapped expectations
         ts = np.arange(-np.pi, np.pi, model.params.dt)
         temp = np.zeros((model.n_streams, ts.size))
