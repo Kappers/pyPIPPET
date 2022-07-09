@@ -7,7 +7,7 @@ __Contact__: `t.m.kaplan AT qmul.ac.uk`
 
 ---
 
-Further information TBC.... 
+Further information TBC.... see the [examples](https://github.com/Kappers/pyPIPPET/blob/main/Examples.ipynb).
 
 ---
 
