@@ -341,6 +341,11 @@ class pPIPPET(PIPPET):
 class oscPIPPET(PIPPET):
     ''' Oscillatory PIPPET '''
 
+    def __init__(self, params: PIPPETParams):
+        super().__init__(params)
+        self.z_s = np.ones(self.n_ts, dtype=np.clongdouble)
+        self.z_s[0] = np.exp(complex(-self.params.V_0/2, self.params.mu_0))
+
     def step(self, t_i: float, z_prev: complex, mu_prev: float, V_prev: float) -> complex:
         ''' Posterior update for a time step '''
 
@@ -349,7 +354,13 @@ class oscPIPPET(PIPPET):
             blambda = self.streams[s_i].zlambda(mu_prev, V_prev, self.params.tau)
             z_hat = self.streams[s_i].z_hat(mu_prev, V_prev, blambda, self.params.tau)
             dz_sum += blambda*(z_hat-z_prev)*self.params.dt
-        z = z_prev + z_prev*complex(-(self.params.sigma_phi**2)/2, self.params.tau)*self.params.dt - dz_sum
+
+        dz_par  =  -(self.params.sigma_phi**2)/2 * self.params.dt
+        dz_perp = self.params.tau * self.params.dt
+        z = z_prev * np.exp(1j*dz_perp + dz_par) - dz_sum
+        # Alternatively:
+        #z = z_prev + z_prev*complex(-(self.params.sigma_phi**2)/2, self.params.tau)*self.params.dt - dz_sum
+
         mu, V_s = PIPPETStream.z_mu_V(z)
 
         t_prev, t = self.ts[t_i-1], self.ts[t_i]
@@ -362,9 +373,9 @@ class oscPIPPET(PIPPET):
 
                 self.surp[t_i, s_i, 0] = -np.log(self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
                 self.surp[t_i, s_i, 1] = -np.log(self.streams[s_i].lambda_hat(mu, V_s)*self.params.dt)
-                self.grad[t_i,s_i] =  -np.log(self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
-                self.grad[t_i,s_i] +=  np.log(self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
-                self.grad[t_i,s_i] /= .02
+                self.grad[t_i, s_i] =  -np.log(self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
+                self.grad[t_i, s_i] +=  np.log(self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
+                self.grad[t_i, s_i] /= .02
             else:
                 self.surp[t_i, s_i, 0] = -np.log(1-self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
                 self.surp[t_i, s_i, 1] = -np.log(1-self.streams[s_i].lambda_hat(mu, V_s)*self.params.dt)
