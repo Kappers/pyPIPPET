@@ -38,6 +38,10 @@ class TemplateParams:
     e_lambdas: np.ndarray # Strength of expected event times
     label: str            # Identifier/label for analysis
 
+    def reset(self, means: np.ndarray, vars_: np.ndarray, lambdas: np.ndarray) -> None:
+        self.e_means = means
+        self.e_vars = vars_
+        self.e_lambdas = lambdas
 
 @dataclass(init=True, repr=True)
 class PIPPETParams:
@@ -62,7 +66,7 @@ class PIPPETParams:
     tau: float = 1.0   # Tempo-like dial for oscPIPPET
 
     def add(self, times: np.ndarray, means: np.ndarray, vars_: np.ndarray, lambdas: np.ndarray,
-            label: str):
+            label: str) -> None:
         ''' Add an expectation template, which corresponds to either:
             (1) a unique event stream for mPIPPET,
             (2) a separate expectation template for pPIPPET
@@ -152,7 +156,8 @@ class PIPPET(ABC):
             self.streams[s_i].e_times_p[self.streams[s_i].e_times_p < 0] = 0.0
 
         # Timing of simulation
-        self.tmax = max(s.e_times_p[-1] for s in self.streams) + params.overtime
+        self.tmax = params.tmax if ~np.isnan(params.tmax) else max(s.e_times_p[-1] for s in self.streams)
+        self.tmax += params.overtime
         self.ts = np.arange(self.params.t0, self.tmax+self.params.dt, step=self.params.dt)
         self.n_ts = self.ts.shape[0]
         # Initialise sufficient statistics
@@ -175,6 +180,13 @@ class PIPPET(ABC):
         if self.event_n[s_i] < len(evts):
             return t_prev <= evts[self.event_n[s_i]] <= t
         return False
+
+    def add_event(self, s_i: int, event_time: float) -> None:
+        ''' Add a new event '''
+        if self.streams[s_i].e_times_p.size > 0 and event_time < self.streams[s_i].e_times_p[-1]:
+            raise ValueError('Existing observation time exceeds new event time')
+        n_event = self.streams[s_i].e_times_p.size
+        self.streams[s_i].e_times_p = np.insert(self.streams[s_i].e_times_p, n_event, event_time)
 
     @abstractmethod
     def step(self) -> tuple[float, float]:
@@ -336,7 +348,6 @@ class pPIPPET(PIPPET):
                 for n in range(self.n_m):
                     if m != n:
                         self.V_s[i] -= self.p_m[i,m]*self.p_m[i,n]*mu_ms[m]*mu_ms[n]
-
 
 class oscPIPPET(PIPPET):
     ''' Oscillatory PIPPET '''
