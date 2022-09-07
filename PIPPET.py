@@ -9,9 +9,8 @@ Python variant of Jonathan Cannon's original MATLAB implementation:
 
 
 TODO:
-- Surprisal/Gradients for pPIPPET
+- Gradients for pPIPPET
 - Refactor for mpPIPPET, multi-stream per template
-- poscPIPPET, because, why not?
 
 [1] Expectancy-based rhythmic entrainment as continuous Bayesian inference.
     Cannon J (2021)  PLOS Computational Biology 17(6): e1009025.
@@ -204,7 +203,7 @@ class PIPPET(ABC):
 class mPIPPET(PIPPET):
     ''' PIPPET with multiple event streams '''
 
-    def step(self, t_i: float, mu_prev: float, V_prev: float) -> tuple[float, float]:
+    def step(self, t_i: int, mu_prev: float, V_prev: float) -> tuple[float, float]:
         ''' Posterior update for a time step '''
 
         # Internal phase noise
@@ -249,6 +248,9 @@ class mPIPPET(PIPPET):
                 self.grad[t_i, s_i] +=  np.log(1-self.streams[s_i].lambda_hat(mu_prev-.01, V_prev)*self.params.dt)
                 self.grad[t_i, s_i] /= .02
 
+        self.mu_s[t_i] = mu
+        self.V_s[t_i] = V
+        
         return mu, V
 
     def run(self) -> None:
@@ -256,9 +258,7 @@ class mPIPPET(PIPPET):
         for i in range(1, self.n_ts):
             mu_prev = self.mu_s[i-1]
             V_prev = self.V_s[i-1]
-            mu, V = self.step(i, mu_prev, V_prev)
-            self.mu_s[i] = mu
-            self.V_s[i] = V
+            _ = self.step(i, mu_prev, V_prev)
 
 
 class pPIPPET(PIPPET):
@@ -280,7 +280,7 @@ class pPIPPET(PIPPET):
             self.L_ms[0, s_i] = m.lambda_hat(self.mu_s[0], self.V_s[0])
         self.L_s[0] = np.sum(self.p_m[0] * self.L_ms[0])
 
-    def step(self, s_i: int, mu_prev: float, V_prev: float, is_event: bool=False) -> tuple[float, float]:
+    def step_stream(self, s_i: int, mu_prev: float, V_prev: float, is_event: bool=False) -> tuple[float, float]:
         ''' Posterior step for a given pattern '''
 
         noise = np.sqrt(self.params.dt) * self.params.eta_mu * np.random.randn()
@@ -300,6 +300,55 @@ class pPIPPET(PIPPET):
 
         return mu, V
 
+    def step(self, t_i: int, lambda_prev: float, mu_prev: float, V_prev: float) -> tuple[float, float]:
+        mu_ms = np.zeros(self.n_m)
+        V_ms = np.zeros(self.n_m)
+
+        t_prev, t = self.ts[t_i-1], self.ts[t_i]
+
+        # For each pattern
+        for s_i in range(self.n_m):
+            lambda_m_prev = self.L_ms[t_i-1, s_i]
+            prev_p_m = self.p_m[t_i-1, s_i]
+
+            # Update p_m based on event observations (or absence of them)
+            is_event = self.is_onset(t_prev, t, s_i)
+            d_p_m = prev_p_m * (lambda_m_prev/lambda_prev - 1)
+            if not is_event:
+                d_p_m *= -self.params.dt * lambda_prev
+            self.p_m[t_i, s_i] = prev_p_m + d_p_m
+
+            # Update posterior and lambda_m
+            mu_m, V_m = self.step_stream(s_i, mu_prev, V_prev, is_event)
+            lambda_m = self.streams[s_i].lambda_hat(mu_m, V_m)
+
+            self.L_ms[t_i, s_i] = lambda_m
+            mu_ms[s_i] = mu_m
+            V_ms[s_i] = V_m
+
+            if is_event:
+                self.event_n[s_i] += 1
+                self.idx_event.add(t_i)
+                self.event_stream[t_i].add(s_i)
+
+                self.surp[t_i, s_i, 0] = -np.log(self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
+                self.surp[t_i, s_i, 1] = -np.log(self.streams[s_i].lambda_hat(mu_m, V_m)*self.params.dt)
+            else:
+                self.surp[t_i, s_i, 0] = -np.log(1-self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
+                self.surp[t_i, s_i, 1] = -np.log(1-self.streams[s_i].lambda_hat(mu_m, V_m)*self.params.dt)
+
+        # Marginalize across patterns
+        self.mu_s[t_i] = np.sum(self.p_m[t_i] * mu_ms)
+        self.L_s[t_i] = np.sum(self.p_m[t_i] * self.L_ms[t_i])
+        self.V_s[t_i] = np.sum(self.p_m[t_i] * V_ms)
+        self.V_s[t_i] += np.sum(self.p_m[t_i]*(1 - self.p_m[t_i])*np.power(mu_ms, 2))
+        for m in range(self.n_m):
+            for n in range(self.n_m):
+                if m != n:
+                    self.V_s[t_i] -= self.p_m[t_i,m]*self.p_m[t_i,n]*mu_ms[m]*mu_ms[n]
+
+        return self.mu_s[t_i], self.V_s[t_i]
+
     def run(self) -> None:
         ''' Step through entire stimulus, for all patterns '''
 
@@ -308,46 +357,8 @@ class pPIPPET(PIPPET):
             lambda_prev = self.L_s[i-1]
             mu_prev = self.mu_s[i-1]
             V_prev = self.V_s[i-1]
+            _ = self.step(i, lambda_prev, mu_prev, V_prev)
 
-            mu_ms = np.zeros(self.n_m)
-            V_ms = np.zeros(self.n_m)
-
-            t_prev, t = self.ts[i-1], self.ts[i]
-
-            # For each pattern
-            for s_i in range(self.n_m):
-                lambda_m_prev = self.L_ms[i-1, s_i]
-                prev_p_m = self.p_m[i-1, s_i]
-
-                # Update p_m based on event observations (or absence of them)
-                is_event = self.is_onset(t_prev, t, s_i)
-                d_p_m = prev_p_m * (lambda_m_prev/lambda_prev - 1)
-                if not is_event:
-                    d_p_m *= -self.params.dt * lambda_prev
-                self.p_m[i, s_i] = prev_p_m + d_p_m
-
-                # Update posterior and lambda_m
-                mu_m, V_m = self.step(s_i, mu_prev, V_prev, is_event)
-                lambda_m = self.streams[s_i].lambda_hat(mu_m, V_m)
-
-                self.L_ms[i, s_i] = lambda_m
-                mu_ms[s_i] = mu_m
-                V_ms[s_i] = V_m
-
-                if is_event:
-                    self.event_n[s_i] += 1
-                    self.idx_event.add(i)
-                    self.event_stream[i].add(s_i)
-
-            # Marginalize across patterns
-            self.mu_s[i] = np.sum(self.p_m[i] * mu_ms)
-            self.L_s[i] = np.sum(self.p_m[i] * self.L_ms[i])
-            self.V_s[i] = np.sum(self.p_m[i] * V_ms)
-            self.V_s[i] += np.sum(self.p_m[i]*(1 - self.p_m[i])*np.power(mu_ms, 2))
-            for m in range(self.n_m):
-                for n in range(self.n_m):
-                    if m != n:
-                        self.V_s[i] -= self.p_m[i,m]*self.p_m[i,n]*mu_ms[m]*mu_ms[n]
 
 class oscPIPPET(PIPPET):
     ''' Oscillatory PIPPET '''
@@ -357,7 +368,7 @@ class oscPIPPET(PIPPET):
         self.z_s = np.ones(self.n_ts, dtype=np.clongdouble)
         self.z_s[0] = np.exp(complex(-self.params.V_0/2, self.params.mu_0))
 
-    def step(self, t_i: float, z_prev: complex, mu_prev: float, V_prev: float) -> complex:
+    def step(self, t_i: int, z_prev: complex, mu_prev: float, V_prev: float) -> complex:
         ''' Posterior update for a time step '''
 
         dz_sum = 0
@@ -372,29 +383,38 @@ class oscPIPPET(PIPPET):
         # Alternatively:
         #z = z_prev + z_prev*complex(-(self.params.sigma_phi**2)/2, self.params.tau)*self.params.dt - dz_sum
 
-        mu, V_s = PIPPETStream.z_mu_V(z)
+        mu, V = PIPPETStream.z_mu_V(z)
 
         t_prev, t = self.ts[t_i-1], self.ts[t_i]
         for s_i in range(self.n_streams):
             if self.is_onset(t_prev, t, s_i):
-                z = self.streams[s_i].z_hat(mu, V_s, self.streams[s_i].zlambda(mu, V_s, self.params.tau), self.params.tau)
+                z = self.streams[s_i].z_hat(mu, V, self.streams[s_i].zlambda(mu, V, self.params.tau), self.params.tau)
+                mu, V = PIPPETStream.z_mu_V(z)
                 self.event_n[s_i] += 1
                 self.idx_event.add(t_i)
                 self.event_stream[t_i].add(s_i)
 
                 self.surp[t_i, s_i, 0] = -np.log(self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
-                self.surp[t_i, s_i, 1] = -np.log(self.streams[s_i].lambda_hat(mu, V_s)*self.params.dt)
+                self.surp[t_i, s_i, 1] = -np.log(self.streams[s_i].lambda_hat(mu, V)*self.params.dt)
                 self.grad[t_i, s_i] =  -np.log(self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
                 self.grad[t_i, s_i] +=  np.log(self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
                 self.grad[t_i, s_i] /= .02
             else:
                 self.surp[t_i, s_i, 0] = -np.log(1-self.streams[s_i].lambda_hat(mu_prev, V_prev)*self.params.dt)
-                self.surp[t_i, s_i, 1] = -np.log(1-self.streams[s_i].lambda_hat(mu, V_s)*self.params.dt)
+                self.surp[t_i, s_i, 1] = -np.log(1-self.streams[s_i].lambda_hat(mu, V)*self.params.dt)
                 self.grad[t_i, s_i] =  -np.log(1-self.streams[s_i].zlambda(mu_prev+.01, V_prev, self.params.tau)*self.params.dt)
                 self.grad[t_i, s_i] +=  np.log(1-self.streams[s_i].zlambda(mu_prev-.01, V_prev, self.params.tau)*self.params.dt)
                 self.grad[t_i, s_i] /= .02
 
-        return z
+        # Noise
+        mu += np.sqrt(self.params.dt) * self.params.eta_mu * np.random.randn()
+        V *= np.exp(np.sqrt(self.params.dt) * self.params.eta_V * np.random.randn())
+
+        # Update
+        self.mu_s[t_i], self.V_s[t_i] = mu, V
+        self.z_s[t_i] = np.exp(complex(-V/2, mu))
+
+        return self.z_s[t_i]
 
     def run(self) -> None:
         ''' Step through entire stimulus, tracking sufficient statistics '''
@@ -402,14 +422,7 @@ class oscPIPPET(PIPPET):
             z_prev = self.z_s[i-1]
             mu_prev = self.mu_s[i-1]
             V_prev = self.V_s[i-1]
-            z = self.step(i, z_prev, mu_prev, V_prev)
-            mu, V = PIPPETStream.z_mu_V(z)
-            # Noise
-            mu += np.sqrt(self.params.dt) * self.params.eta_mu * np.random.randn()
-            V *= np.exp(np.sqrt(self.params.dt) * self.params.eta_V * np.random.randn())
-            # Update
-            self.mu_s[i], self.V_s[i] = mu, V
-            self.z_s[i] = np.exp(complex(-V/2, mu))
+            _ = self.step(i, z_prev, mu_prev, V_prev)
 
 
 if __name__ == "__main__":
